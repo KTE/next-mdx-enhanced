@@ -102,20 +102,29 @@ async function extractFrontMatter(pluginOptions, files, root) {
   debug('start: frontmatter extensions')
   const frontMatter = await Promise.all(
     fileContents.map(async (content, idx) => {
-      const __resourcePath = files[idx]
-        .replace(path.join(root, 'pages'), '')
-        .substring(1)
+      const filePath = files[idx].replace(path.join(root, 'pages'), '')
+      const resourcePath = filePath.substring(1)
 
       const { data } = matter(content, {
         safeLoad: true,
         filename: files[idx],
       })
 
+      const mdxMeta = {
+        __resourcePath: resourcePath,
+        mdx: {
+          path: path.join(
+            path.dirname(filePath),
+            path.basename(filePath, path.extname(filePath))
+          ),
+        },
+      }
+
       const extendedFm = await extendFrontMatter({
         content,
         frontMatter: {
           ...data,
-          __resourcePath,
+          ...mdxMeta,
         },
         phase: 'prebuild',
         extendFm: pluginOptions.extendFrontMatter,
@@ -124,7 +133,7 @@ async function extractFrontMatter(pluginOptions, files, root) {
       return {
         ...data,
         ...extendedFm,
-        __resourcePath,
+        ...mdxMeta,
       }
     })
   ).catch(console.error)

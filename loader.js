@@ -15,7 +15,10 @@ module.exports = async function mdxEnhancedLoader(src) {
   // Parse the front matter
   let content, data
   try {
-    const res = matter(src, { safeLoad: true, filename: this.resourcePath })
+    const res = matter(src, {
+      safeLoad: true,
+      filename: this.resourcePath,
+    })
     content = res.content
     data = res.data
   } catch (err) {
@@ -23,22 +26,26 @@ module.exports = async function mdxEnhancedLoader(src) {
   }
   // Scan for plugin `scan` option to return results based on RegEx patterns provided in config
   const scans = scanContent(options, content)
-  // Get file path relative to project root
-  const resourcePath = normalizeToUnixPath(this.resourcePath)
-    .replace(
-      normalizeToUnixPath(
-        path.join(normalizeToUnixPath(this.rootContext), 'pages')
-      ),
-      ''
-    )
+
+  // Check if MDX file is a (next.js) page
+  const filePath = normalizeToUnixPath(this.resourcePath)
+  const rootDir = normalizeToUnixPath(this.rootContext)
+  // NOTE: also given in next config: `options.defaultLoaders.babel.options`
+  const pagesDir = normalizeToUnixPath(path.join(rootDir, 'pages'))
+  const isPage = filePath.startsWith(pagesDir)
+
+  // Get file path relative to project or pages root
+  const resourcePath = filePath
+    .replace(isPage ? pagesDir : rootDir, '')
     .substring(1)
 
   // Checks if there's a layout, if there is, resolve the layout and wrap the content in it.
   processLayout
-    .call(this, options, data, content, resourcePath, scans)
+    .call(this, options, data, content, resourcePath, scans, isPage)
     .then((result) => callback(null, result))
     .catch((err) => callback(err))
 }
+
 function scanContent(options, content) {
   const { mdxEnhancedPluginOptions: pluginOpts } = options
   if (!pluginOpts.scan) return {}
@@ -57,21 +64,28 @@ function scanContent(options, content) {
     return acc
   }, {})
 }
+
 async function processLayout(
   options,
   frontMatter,
   content,
   resourcePath,
-  scans
+  scans,
+  isPage
 ) {
   const { mdxEnhancedPluginOptions: pluginOpts } = options
+
+  const mdxMeta = {
+    __resourcePath: resourcePath,
+    __scans: scans,
+    __path: `/${resourcePath}`,
+  }
 
   const extendedFm = await extendFrontMatter({
     content,
     frontMatter: {
       ...frontMatter,
-      __resourcePath: resourcePath,
-      __scans: scans,
+      ...mdxMeta,
     },
     phase: 'loader',
     extendFm: pluginOpts.extendFrontMatter,
@@ -80,17 +94,30 @@ async function processLayout(
   const mergedFrontMatter = {
     ...frontMatter,
     ...extendedFm,
-    __resourcePath: resourcePath,
-    __scans: scans,
+    ...mdxMeta,
   }
 
-  // If no layout is provided and the default layout setting is not on, return the
-  // content directly.
-  if (!mergedFrontMatter.layout && !pluginOpts.defaultLayout) return content
+  // The defaultLayout option can be a function to find a layout dynamically, otherwise it defaults to 'index'.
+  const defaultLayoutName = !(typeof pluginOpts.defaultLayout === 'function')
+    ? 'index'
+    : callUserFnWithErrorHandling('defaultLayout', pluginOpts.defaultLayout, {
+        frontMatter: extendedFm,
+        isPage: isPage,
+        resourcePath: resourcePath,
+        scans: scans,
+      })
 
-  // Set the default if the option is active and there's no layout
+  // If no layout is provided and the default layout setting is not on or empty,
+  // return the content directly.
+  if (
+    !mergedFrontMatter.layout &&
+    !(pluginOpts.defaultLayout && defaultLayoutName)
+  )
+    return content
+
+  // Apply the default if the option is active and there's no layout
   if (!mergedFrontMatter.layout && pluginOpts.defaultLayout) {
-    mergedFrontMatter.layout = 'index'
+    mergedFrontMatter.layout = defaultLayoutName
   }
 
   // Layouts default to resolving from "<root>/layouts", but this is configurable.
@@ -134,7 +161,18 @@ async function processLayout(
 
 export * from '${normalizeToUnixPath(layoutPath)}'
 export default layout(${stringifyObject(mergedFrontMatter)})
+const page = ${JSON.stringify(mergedFrontMatter)}
 
 ${content}
 `
+}
+
+function callUserFnWithErrorHandling(name, fn, opts) {
+  try {
+    return fn.apply(null, [opts])
+  } catch (error) {
+    throw new Error(
+      `while calling the configured function \`${name}\`, the following error happended: \n${error}`
+    )
+  }
 }
